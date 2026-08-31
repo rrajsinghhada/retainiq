@@ -1,232 +1,183 @@
-# RetainIQ — Neon build, step by step
+# RetainIQ — Retention Decision Engine
 
-Everything below has been run end to end against PostgreSQL 16 with your actual
-CSV. The numbers in the "expected output" blocks are the real ones you should
-see, so if yours differ, something went wrong at that step.
+A telco loses a quarter of its subscribers. The retention budget is finite. Who
+do you spend it on, how much do you spend, and where does that spend stop paying
+for itself?
+
+Most churn projects stop at the first question. This one answers all three.
 
 ---
 
-## Step 0 — Local setup (Mac, one time)
+## The problem
+
+Predicting churn is the easy half. A model that tells you 1,869 subscribers are
+likely to leave has told you nothing about what to do, because it has not told
+you which of them are worth paying to keep. A customer paying ₹21 a month with
+an 80% churn probability and a customer paying ₹105 a month with a 40%
+probability are not the same retention decision, and no ranking by probability
+will distinguish them.
+
+RetainIQ closes that gap: it multiplies each subscriber's predicted churn
+probability by their lifetime value to produce a **value at risk**, then derives
+the break-even offer size below which no intervention is worth making.
+
+## What it found
+
+Across 7,043 subscribers:
+
+- **26.5% churn, but they carry 30.5% of monthly revenue.** Churn is not evenly
+  distributed. 61.6% of the lost revenue comes from subscribers billing ₹80+.
+- **Commitment predicts retention; tenure mostly does not.** Month-to-month
+  churns at 42.7%, one-year at 11.3%, two-year at 2.8%. The apparent "first six
+  months" effect largely dissolves once you control for contract type — within
+  one-year and two-year contracts, churn actually *rises* slightly with tenure.
+- **The premium product retains worst.** Fibre optic subscribers pay 57% more
+  than DSL and churn at 41.9% against 19.0%.
+- **Risk factors compound.** Month-to-month + fibre + electronic check churns at
+  60.4% — 1,307 subscribers, 18.6% of the base, and the highest-ARPU group in
+  the dataset.
+
+## The recommendation
+
+**A ₹160 retention offer, extended to the 4,256 subscribers whose value at risk
+exceeds ₹370.** Net contribution: ₹1,275,282.
+
+Scenario testing across offer sizes from ₹20 to ₹400 shows the return peaking in
+the ₹140–160 range and falling away on either side. At ₹400 the programme
+returns 44% less, because the qualifying threshold rises faster than the
+persuasion improves. The peak is flat between ₹140 and ₹160 — net contribution
+varies by 0.01% — so the recommendation survives a material error in the
+response assumptions.
+
+Full write-up: [DIAGNOSIS.md](DIAGNOSIS.md)
+
+## Model performance
+
+| Model | AUC | Top-decile precision | Lift | Brier |
+|---|---|---|---|---|
+| Logistic regression | 0.8411 | 76.1% | 2.87× | 0.1633 |
+| XGBoost | 0.8269 | 75.6% | 2.85× | 0.1647 |
+
+Logistic regression wins on this dataset — 7,000 rows of largely categorical
+features with roughly linear relationships is not where gradient boosting earns
+its keep. It also calibrates better, which matters because these probabilities
+get multiplied by CLV downstream. Class imbalance is handled with class weights
+rather than SMOTE, for the same reason: SMOTE synthesises minority points in
+feature space and distorts the calibration the economics layer depends on.
+
+Lift is the headline metric rather than AUC, because retention teams work a
+target list, not a probability distribution.
+
+## How it works
+
+```
+CSV → raw (all TEXT, load never fails)
+        ↓
+      clean (typed, constrained, one row per subscriber)
+        ↓
+      analytics (15 diagnostic queries: who is leaving and why)
+        ↓
+   [ Python: logistic regression + XGBoost ]
+        ↓
+      ml.churn_scores (probabilities written BACK to Postgres)
+        ↓
+      decision (CLV → value at risk → offer threshold → simulator)
+        ↓
+      Power BI
+```
+
+Five PostgreSQL schemas in one database. The write-back is the design decision
+that matters: predictions return to the warehouse rather than living in a
+notebook, so the economics layer, the target list and the dashboard all read
+from SQL. It also means a natural-language query layer can later be pointed at
+`analytics` and `decision` only, with no grant on `raw` — so it physically
+cannot reach unvalidated data.
+
+Every assumption lives in `decision.assumptions`, one row per scenario. The
+simulator is not code; it is the same views evaluated against different
+assumption rows.
+
+## Repository
+
+```
+sql/01_schemas.sql          five schemas
+sql/02_raw.sql              landing table
+sql/03_clean.sql            typed layer + plan dimension
+sql/04_analytics.sql        six diagnostic views
+sql/05_ml.sql               score write-back tables
+sql/06_decision.sql         assumptions, CLV, value at risk, simulator
+sql/queries/                15 analytical queries, one business question each
+07_train_and_score.py       train, evaluate, write scores back
+08_export_for_powerbi.sh    two CSVs for the dashboard
+run_all.sh                  full rebuild from one command
+DIAGNOSIS.md                one-page written diagnosis
+```
+
+## Running it
+
+Requires PostgreSQL client tools and a Postgres database (built on Neon).
 
 ```bash
-brew install libpq
-brew link --force libpq
-psql --version          # should print 16.x or 17.x
-```
+conda env create -f environment.yml && conda activate retainiq
 
-## Step 1 — Neon project
-
-In the Neon console: **New Project** → name `retainiq`, database `retainiq_db`.
-Pick the region nearest you from whatever the console currently offers (check
-the list — don't assume). Copy the connection string; it looks like:
-
-```
-postgresql://user:pass@ep-xxx.region.aws.neon.tech/retainiq_db?sslmode=require
-```
-
-Put it in a gitignored file, never in your shell history or a notebook cell:
-
-```bash
-cd ~/projects/retainiq
-echo 'DATABASE_URL="postgresql://user:pass@ep-xxx...?sslmode=require"' > .env
-echo -e '.env\n*.csv\n__pycache__/' > .gitignore
+echo 'export DATABASE_URL="postgresql://..."' > .env
 source .env
+
+psql "$DATABASE_URL" -f sql/01_schemas.sql
+psql "$DATABASE_URL" -f sql/02_raw.sql
+psql "$DATABASE_URL" -c "\copy raw.telco_customers FROM 'data/WA_Fn-UseC_-Telco-Customer-Churn.csv' WITH (FORMAT csv, HEADER true)"
+./run_all.sh
 ```
 
-Use the **direct** endpoint (no `-pooler` in the hostname) for loading and
-migrations. The pooler endpoint is for applications.
+Dataset: [IBM Telco Customer Churn](https://www.kaggle.com/datasets/blastchar/telco-customer-churn),
+7,043 subscribers. Download it to `data/` — it is not committed.
 
-## Step 2 — Build the schemas
+Every script is idempotent. `run_all.sh` rebuilds the entire warehouse and
+reproduces every figure above.
 
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/01_schemas.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/02_raw.sql
-```
+## What this project cannot tell you
 
-Five schemas, not one `public` dump: `raw`, `clean`, `analytics`, `ml`,
-`decision`. This is also what makes the optional LLM layer safe later — you
-point text-to-SQL at `analytics` and `decision` only, so it physically cannot
-reach the raw table.
+Stated plainly, because these are the questions worth asking of it.
 
-## Step 3 — Load the CSV
+**It measures propensity, not persuadability.** The model identifies who is
+likely to leave, not who can be talked out of it. A subscriber at 90% churn
+probability may be unreachable while one at 50% is highly persuadable. Resolving
+this requires an uplift model trained on a randomised holdout — the offer
+withheld from a random control group and the difference measured. No amount of
+observational data substitutes for that experiment.
 
-```bash
-psql "$DATABASE_URL" -c "\copy raw.telco_customers FROM \
-  '/Users/YOU/Downloads/WA_Fn-UseC_-Telco-Customer-Churn.csv' \
-  WITH (FORMAT csv, HEADER true)"
-```
+**The offer response curve is assumed, not measured.** The relationship between
+offer size and save rate is asserted from judgment
+(`save_rate = 0.50 × (1 − e^(−offer/80))`). Sensitivity scenarios spanning a 25%
+to 55% save rate are included and the recommendation holds across them, but the
+curve is an input, not a finding. Note that a *constant* save rate across the
+ladder would be worse than an assumed curve: it degenerates the optimisation, so
+that net contribution falls monotonically and the "optimal" offer is always the
+smallest one possible.
 
-`\copy` (client-side), not `COPY` (server-side — Neon can't see your Mac).
+**CLV and churn probability are not fully reconciled.** Expected tenure is
+derived from the segment-level hazard while churn probability comes from the
+individual model, so a subscriber can carry a 79.9% churn probability and a
+72-month expected life simultaneously. A sharper version would set each
+subscriber's expected tenure from their own hazard.
 
-Expected: `COPY 7043`
+**Contract effects are correlational.** Whether two-year contracts cause
+retention, or already-committed customers are the ones who sign them, cannot be
+separated from this data.
 
-Verify before going further:
+**The data is US-flavoured.** Indian subscriber-level telecom data is not
+public. Monetary figures are the dataset's own units, written as ₹ for the
+Indian telecom framing this project is built around. Market context from TRAI
+circle-level data is kept as a separate layer rather than forced into a join it
+cannot support.
 
-```sql
-SELECT COUNT(*) AS rows, COUNT(DISTINCT customer_id) AS ids
-FROM raw.telco_customers;                       -- 7043 | 7043
+## Next
 
-SELECT COUNT(*) FROM raw.telco_customers
-WHERE TRIM(total_charges) = '';                 -- 11
-```
-
-**That last query is the one people get wrong.** The 11 blank `TotalCharges`
-values in this file are a *single space*, not an empty string. `WHERE
-total_charges = ''` returns zero rows and you conclude the data is clean. It
-isn't. `TRIM` is what catches them.
-
-## Step 4 — Clean layer
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/03_clean.sql
-```
-
-Creates `clean.dim_plan` (the commercial configuration lookup) and
-`clean.subscribers` (7,043 rows, typed, with a primary key and CHECK
-constraints so a bad reload fails loudly instead of silently).
-
-Those 11 rows all have `tenure = 0` and none of them churned — new joiners who
-hadn't been billed yet. They get `total_charges = 0` and a
-`total_charges_imputed` flag, so the decision is visible in the data rather
-than buried in a notebook.
-
-Note what this file *doesn't* do: no `fact_usage`, no `fact_billing`, no
-`circle_id`, no `churn_month`. This CSV is one snapshot row per customer with
-no month column. Those tables arrive with the TRAI layer. Building them now
-would mean inventing data.
-
-## Step 5 — Diagnostic views
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/04_analytics.sql
-psql "$DATABASE_URL" -c "SELECT * FROM analytics.v_churn_by_tenure_band;"
-```
-
-Expected:
-
-```
- tenure_band  | subscribers | churned | churn_rate_pct | avg_monthly_charges
---------------+-------------+---------+----------------+---------------------
- 00-06 months |        1481 |     784 |          52.94 |               54.74
- 07-12 months |         705 |     253 |          35.89 |               58.95
- 13-24 months |        1024 |     294 |          28.71 |               61.36
- 25-48 months |        1594 |     325 |          20.39 |               65.93
- 49+ months   |        2239 |     213 |           9.51 |               73.95
-```
-
-Overall: 26.54% churn, but **30.50% of monthly revenue** — churn is skewed
-toward higher-ARPU subscribers. That one line is your opening slide.
-
-Six views ship here (overview, tenure band, plan, add-ons, value decile,
-survival hazard). Your spec asks for 12–15 analytical queries — write the rest
-yourself, one per business question, and keep them in `sql/queries/`.
-
-## Step 6 — Train, score, write back
-
-```bash
-pip install pandas scikit-learn xgboost sqlalchemy psycopg2-binary
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/05_ml.sql
-python 07_train_and_score.py
-```
-
-Real output from this dataset:
-
-```
-logit_v1   AUC 0.8516 | top-decile recall 0.287 precision 0.761 lift 2.87
-xgb_v1     AUC 0.8376 | top-decile recall 0.283 precision 0.750 lift 2.83
-```
-
-Two things worth having ready:
-
-- **XGBoost did not beat logistic regression here.** That is a real result on a
-  small, mostly-categorical dataset, and it is a much better answer to "why did
-  you keep logistic regression?" than a preference for interpretability.
-- The odds ratios print to console. Fibre-optic internet ≈ 3.3× churn odds; a
-  two-year contract ≈ 0.21×. Those are the sentences you say out loud.
-
-Both models' scores land in `ml.churn_scores` with a `model_version`, and the
-evaluation numbers land in `ml.model_metrics` — so the figures on your resume
-are reproducible from the database, not from memory.
-
-## Step 7 — The decision layer
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/06_decision.sql
-psql "$DATABASE_URL" -c "SELECT * FROM decision.v_simulator WHERE scenario LIKE 'offer_%' ORDER BY offer_cost;"
-```
-
-Every assumption lives in `decision.assumptions`, one row per scenario. When
-you're asked where the save rate came from, you open a table.
-
-The curve, on real scores:
-
-```
- offer_cost | save_rate | targeted | net_contribution
-------------+-----------+----------+------------------
-     100.00 |     0.357 |     4661 |       1,192,200
-     120.00 |     0.388 |     4551 |       1,243,595
-     140.00 |     0.413 |     4424 |       1,268,706   ← peak
-     160.00 |     0.432 |     4276 |       1,268,111
-     180.00 |     0.447 |     4154 |       1,251,269
-```
-
-**The single most important design point in the whole project:** the assumed
-save rate must *rise with offer size and flatten out*. If you hold it constant
-across the ladder, net contribution falls monotonically and the simulator's
-answer is always "offer the smallest amount possible" — no peak, no
-recommendation, no conversation. The peak exists because bigger offers persuade
-more people with diminishing returns. The curve used here is
-`save_rate = 0.50 × (1 − e^(−offer/80))`, and it is asserted, not measured.
-Say that before the interviewer asks.
-
-Also note the peak is flat between 140 and 160. That is worth volunteering:
-the recommendation is robust to a ±15% error in the response curve, which is
-a stronger claim than a sharp optimum would be.
-
-## Step 8 — Power BI
-
-Get Data → PostgreSQL. Server `ep-xxx.region.aws.neon.tech`, database
-`retainiq_db`, **Import** mode, encrypted connection on.
-
-Use Import, not DirectQuery. Neon autosuspends when idle, so a DirectQuery
-dashboard will hang on a cold start in the middle of your demo.
-
-Pull in `analytics.v_churn_by_tenure_band`, `analytics.v_churn_by_value_decile`,
-`decision.v_target_list`, `decision.v_simulator`. One executive page (churn
-rate, revenue at risk, the simulator curve, the recommendation), one diagnostic
-page.
+Uplift modelling on a randomised holdout, answering the incrementality question
+properly. Then budget optimisation across retention channels, with measured
+response curves instead of assumed ones.
 
 ---
 
-## Rebuild from scratch
-
-```bash
-./run_all.sh          # drops and rebuilds everything except the raw load
-```
-
-Everything is idempotent — re-running any file is safe. That matters more than
-it sounds: a warehouse you can rebuild with one command is one you designed; a
-warehouse you clicked together in the SQL editor is one you can't defend.
-
-## Sequencing against your four-week plan
-
-| Week | Files | Deliverable |
-|---|---|---|
-| 1 | `01`–`04` + your own queries | SQL warehouse + one-page diagnosis |
-| 2 | `05`, `07`, `06` | Ranked target list with economic justification |
-| 3 | Power BI + simulator polish | The demoable version |
-| 4 | text-to-SQL over `analytics` + `decision` only | The "ask it anything" moment |
-
-Stop after any week and you still have a coherent project.
-
-## Known limits — say these before you're asked
-
-1. **No incrementality.** `p_churn` is propensity, not treatment response.
-   Resolving it needs an uplift model on a randomised holdout.
-2. **The save-rate response curve is invented**, not measured. Sensitivity
-   range is in `decision.assumptions`.
-3. **The monthly hazard is derived from an assumed observation window.** The
-   Kaggle churn flag carries no time window; `window_6` and `window_24`
-   scenarios show what that does to CLV.
-4. **The subscriber data is US-flavoured.** TRAI stays a separate layer. Don't
-   force the join.
+Built by [Rishiraj Singh Hada](https://github.com/rrajsinghhada) · MBA Business
+Analytics, BITS Pilani
