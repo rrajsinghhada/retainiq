@@ -1,0 +1,11 @@
+name: retainiq
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - scikit-learn
+  - pandas
+  - xgboost
+  - psycopg2
+  - sqlalchemy
+prefix: /Users/rishirajsinghhada/miniconda3/envs/retainiq
