@@ -51,6 +51,49 @@ response assumptions.
 
 Full write-up: [DIAGNOSIS.md](DIAGNOSIS.md)
 
+## Market context: does this apply to Indian telecom?
+
+The subscriber data is a US sample, so a second layer was built from TRAI's
+monthly Telecom Subscription Data reports — circle-level, genuinely Indian, and
+with a real monthly time axis the snapshot cannot provide.
+
+**Vi is losing roughly 988,000 subscribers a month, and the losses are
+concentrated by circle category:**
+
+| Category | Circles | Net change per month |
+|---|---|---|
+| B | 8 | −711,156 |
+| A | 5 | −237,621 |
+| Metro | 3 | −32,148 |
+| C | 6 | −6,932 |
+
+Eight Category B circles account for **72% of the total monthly loss** across
+just over a third of the circles. Category C is close to flat. The bleeding is
+not in the metros where competition is fiercest, nor in the thin rural circles —
+it is concentrated in the mid-tier band.
+
+Madhya Pradesh is worst at −166,297 a month, Rajasthan second at −123,717.
+Rajasthan's Vi base fell from 10.65m in April 2024 to 8.98m by June 2025, a
+15.6% decline with a loss in every observed month. Karnataka is the only circle
+growing, at +44,365 a month — a question worth asking rather than an answer.
+
+**This layer is deliberately not joined to the subscriber model.** The Kaggle
+set is subscriber-level and US-flavoured; TRAI is circle-level aggregate and
+Indian. They share no key and forcing a join would invent a relationship that
+does not exist. They run alongside each other: one supplies the decision
+mechanics, the other the market backdrop.
+
+Two honest notes on the data. TRAI publishes PDFs whose internal rendering
+varies month to month — 8 of 15 reports parsed with every row validated against
+the report's own totals, and the remaining 7 were left out rather than
+hand-transcribed into numbers nobody could reproduce. That leaves gaps in the
+series, so the analytics carry `months_elapsed` and an `is_adjacent` flag and
+normalise per month; a raw month-over-month difference across a five-month gap
+would overstate a single month's loss fivefold. Separately, net subscriber
+change is not a churn rate — it nets gross additions, disconnections and
+porting in both directions.
+
+
 ## Model performance
 
 | Model | AUC | Top-decile precision | Lift | Brier |
@@ -107,8 +150,12 @@ sql/04_analytics.sql        six diagnostic views
 sql/05_ml.sql               score write-back tables
 sql/06_decision.sql         assumptions, CLV, value at risk, simulator
 sql/queries/                15 analytical queries, one business question each
+sql/07_trai_raw.sql         TRAI staging tables
+sql/08_trai_clean.sql       circle and operator dimensions, monthly facts
+sql/09_trai_analytics.sql   gap-aware market views
 07_train_and_score.py       train, evaluate, write scores back
 08_export_for_powerbi.sh    two CSVs for the dashboard
+09_parse_trai.py            TRAI PDF parser, with self-tests
 run_all.sh                  full rebuild from one command
 DIAGNOSIS.md                one-page written diagnosis
 ```
@@ -183,11 +230,10 @@ data.
 retention, or already-committed customers are the ones who sign them, cannot be
 separated from this data.
 
-**The data is US-flavoured.** Indian subscriber-level telecom data is not
-public. Monetary figures are the dataset's own units, written as ₹ for the
-Indian telecom framing this project is built around. Market context from TRAI
-circle-level data is kept as a separate layer rather than forced into a join it
-cannot support.
+**The subscriber data is US-flavoured.** Indian subscriber-level telecom data
+is not public. Monetary figures are the dataset's own units, written as ₹ for
+the Indian telecom framing. The TRAI layer above supplies genuine Indian market
+context, deliberately as a separate layer rather than a forced join.
 
 ## Next
 

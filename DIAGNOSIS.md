@@ -115,6 +115,32 @@ and are likely to outperform discounting:
    month-to-month subscriber still churns at 26.0%, so tenure alone is not a
    reason to deprioritise someone.
 
+## The market backdrop
+
+The subscriber analysis above rests on a US sample. To ground the picture in
+Indian telecom, a second layer was built from TRAI's monthly circle-level
+reports covering April 2024 to June 2025. It is not joined to the subscriber
+data — the two share no key, and forcing a join would invent a relationship
+that does not exist. It runs alongside, as context.
+
+Vodafone Idea is losing approximately 988,000 subscribers a month, and the
+losses are concentrated by circle category rather than spread evenly. Eight
+Category B circles account for 72% of the monthly loss — Madhya Pradesh worst
+at −166,297, Rajasthan next at −123,717 — while the six Category C circles are
+close to flat at −6,932 combined and the three metros account for only −32,148.
+
+The pattern is worth stating plainly: the bleeding is not where competition is
+fiercest, and not where the market is thinnest. It is in the mid-tier band. In
+Rajasthan the base fell from 10.65 million in April 2024 to 8.98 million by
+June 2025 — a 15.6% decline, with a loss in every month observed. Karnataka is
+the sole exception, growing at +44,365 a month. What is different there is a
+question this data cannot answer, and worth asking.
+
+If the retention economics above were applied to a real operator, this is where
+the budget pressure would be: not evenly across the footprint, but weighted
+toward a mid-tier band that is losing the most while receiving the least
+attention in most published commentary.
+
 ## What this analysis cannot tell us
 
 Three limits, stated plainly.
@@ -138,8 +164,27 @@ were already committed are the ones who sign long contracts, cannot be separated
 from this data. The migration recommendation above should be piloted and
 measured, not assumed.
 
+**Net subscriber change is not churn.** The TRAI circle figures net gross
+additions, disconnections and porting in both directions. They show where a base
+is shrinking, not what share of customers left. Treating them as a churn rate
+would be wrong.
+
+**The TRAI series has gaps.** TRAI's PDF rendering varies month to month; 8 of
+15 reports parsed with every row validated against the report's own totals, and
+the remainder were excluded rather than hand-transcribed into figures nobody
+could reproduce. The analysis normalises per month and flags which intervals are
+genuinely consecutive, because a raw difference across a five-month gap
+overstates a single month's loss fivefold.
+
+**The two layers do not join.** Subscriber-level Indian telecom data is not
+public. The Kaggle sample supplies the decision mechanics, TRAI supplies the
+market backdrop, and they share no key. Monetary figures are the dataset's own
+units, written as ₹ for the Indian framing.
+
 ---
 
 *Subscriber-level data: IBM Telco Customer Churn sample (7,043 subscribers).
-Model: logistic regression, AUC 0.841, 76.1% precision and 2.87x lift in the top
-decile, 25% holdout. All figures reproducible from the project warehouse.*
+Market data: TRAI monthly Telecom Subscription Data, April 2024 – June 2025,
+8 reports parsed and validated. Model: logistic regression, AUC 0.841, 76.1%
+precision and 2.87x lift in the top decile, 25% holdout. All figures
+reproducible from the project warehouse.*
