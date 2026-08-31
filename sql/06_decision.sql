@@ -54,6 +54,8 @@ INSERT INTO decision.assumptions VALUES
 -- ---------------------------------------------------------------------------
 -- Monthly churn hazard by contract type, per scenario.
 -- ---------------------------------------------------------------------------
+-- Kept for diagnostics and for the before/after comparison. No longer feeds
+-- the economics: expected tenure is now individual, not segment-level.
 CREATE OR REPLACE VIEW decision.v_segment_hazard AS
 SELECT a.scenario,
        s.contract,
@@ -66,11 +68,34 @@ GROUP  BY a.scenario, s.contract, a.observation_window_months;
 
 -- ---------------------------------------------------------------------------
 -- Per-subscriber economics.
---   expected tenure = 1 / monthly hazard, capped
---   CLV             = ARPU x gross margin x expected tenure
---   value at risk   = P(churn) x CLV
---   offer is worth making when  value_at_risk x save_rate > offer_cost
---   => threshold     = offer_cost / save_rate
+--
+--   THE KEY MODELLING DECISION, stated explicitly because it looks wrong
+--   until you see why it isn't:
+--
+--   Expected tenure here is a COUNTERFACTUAL. It is how long the subscriber
+--   is worth if the retention offer succeeds -- not how long they will last
+--   on their current trajectory. A saved subscriber is by definition no
+--   longer churning at their pre-intervention rate, so expected tenure must
+--   NOT be derived from their own p_churn.
+--
+--   It therefore comes from the segment (contract) hazard, which stands in
+--   for "a comparable retained customer". This is why a subscriber can
+--   legitimately carry a 79.9% churn probability and a 72-month expected
+--   life at the same time: the first is their risk today, the second is
+--   their worth if we keep them.
+--
+--   An earlier revision derived expected tenure from each subscriber's own
+--   p_churn instead. It was tested and rejected: it counts risk twice (once
+--   in the probability, once in the shortened tenure), the two effects
+--   cancel, and the target list inverts to favour LOW-risk customers -- the
+--   exact "discounting people who were never going to leave" failure the
+--   whole project is built to avoid. The comparison view below preserves
+--   both so the difference can be shown rather than asserted.
+--
+--   CLV           = ARPU x gross margin x expected tenure if saved
+--   value at risk = P(churn) x CLV
+--   offer worth making when  value_at_risk x save_rate > offer_cost
+--   => threshold   = offer_cost / save_rate
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW decision.v_customer_economics AS
 SELECT a.scenario,
@@ -80,27 +105,55 @@ SELECT a.scenario,
        s.monthly_charges,
        sc.p_churn,
        LEAST(1.0 / NULLIF(h.monthly_hazard, 0),
-             a.max_expected_tenure_months)::NUMERIC(8,2)      AS expected_tenure_months,
+             a.max_expected_tenure_months)::NUMERIC(8,2)  AS expected_tenure_if_saved,
+       -- Diagnostic only. Never feeds CLV. Kept so the rejected alternative
+       -- can be demonstrated: what this subscriber is worth if NOT saved.
+       LEAST(1.0 / NULLIF(1 - POWER(1 - sc.p_churn,
+                          1.0 / a.observation_window_months), 0),
+             a.max_expected_tenure_months)::NUMERIC(8,2)  AS expected_tenure_if_not_saved,
        ROUND(s.monthly_charges
              * a.gross_margin_pct
              * LEAST(1.0 / NULLIF(h.monthly_hazard, 0),
-                     a.max_expected_tenure_months), 2)         AS clv,
+                     a.max_expected_tenure_months), 2)     AS clv,
        ROUND(sc.p_churn * s.monthly_charges
              * a.gross_margin_pct
              * LEAST(1.0 / NULLIF(h.monthly_hazard, 0),
-                     a.max_expected_tenure_months), 2)         AS value_at_risk,
-       ROUND(a.offer_cost / a.assumed_save_rate, 2)            AS var_threshold,
+                     a.max_expected_tenure_months), 2)     AS value_at_risk,
+       ROUND(a.offer_cost / a.assumed_save_rate, 2)        AS var_threshold,
        a.offer_cost,
        a.assumed_save_rate,
        (sc.p_churn * s.monthly_charges * a.gross_margin_pct
         * LEAST(1.0 / NULLIF(h.monthly_hazard, 0), a.max_expected_tenure_months)
-        >= a.offer_cost / a.assumed_save_rate)                 AS is_targeted
+        >= a.offer_cost / a.assumed_save_rate)             AS is_targeted
 FROM   clean.subscribers s
 JOIN   ml.churn_scores sc  ON sc.customer_id = s.customer_id
 JOIN   ml.active_model am  ON am.model_version = sc.model_version
 CROSS  JOIN decision.assumptions a
 JOIN   decision.v_segment_hazard h
        ON h.scenario = a.scenario AND h.contract = s.contract;
+
+-- ---------------------------------------------------------------------------
+-- The rejected alternative, kept so the choice can be demonstrated.
+-- Ranks subscribers by value at risk under BOTH tenure definitions.
+-- Under the individual-hazard version the top of the list fills with
+-- two-year, low-probability subscribers: safe customers being offered
+-- retention discounts.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW decision.v_tenure_method_comparison AS
+SELECT customer_id,
+       contract,
+       monthly_charges,
+       p_churn,
+       expected_tenure_if_saved,
+       expected_tenure_if_not_saved,
+       value_at_risk                                        AS var_counterfactual,
+       ROUND(p_churn * monthly_charges * 0.65
+             * expected_tenure_if_not_saved, 2)             AS var_individual_hazard,
+       RANK() OVER (ORDER BY value_at_risk DESC)            AS rank_counterfactual,
+       RANK() OVER (ORDER BY p_churn * monthly_charges * 0.65
+                             * expected_tenure_if_not_saved DESC) AS rank_individual
+FROM   decision.v_customer_economics
+WHERE  scenario = 'baseline';
 
 -- ---------------------------------------------------------------------------
 -- The deliverable: who to call, in what order, under the central case.
