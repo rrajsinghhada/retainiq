@@ -155,11 +155,29 @@ ladder would be worse than an assumed curve: it degenerates the optimisation, so
 that net contribution falls monotonically and the "optimal" offer is always the
 smallest one possible.
 
-**CLV and churn probability are not fully reconciled.** Expected tenure is
-derived from the segment-level hazard while churn probability comes from the
-individual model, so a subscriber can carry a 79.9% churn probability and a
-72-month expected life simultaneously. A sharper version would set each
-subscriber's expected tenure from their own hazard.
+**Expected tenure is a counterfactual, and that is deliberate.** CLV uses how
+long a subscriber is worth *if the offer succeeds*, taken from the segment
+hazard — not how long they would last on their current trajectory. So a
+subscriber can carry a 79.9% churn probability and a 72-month expected life at
+once: the first is their risk today, the second is their worth if retained.
+
+This looks like an inconsistency, so the alternative was built and tested:
+deriving each subscriber's expected tenure from their own predicted hazard,
+`h = 1 − (1 − p)^(1/W)`. It was rejected. Counting risk twice — once in the
+probability, once in the shortened tenure — makes the two effects cancel and
+inverts the target list toward low-risk subscribers. The top of the list filled
+with two-year contracts at 16% churn probability, which is precisely the
+"discounting people who were never going to leave" failure the project exists to
+avoid.
+
+`decision.v_tenure_method_comparison` keeps both methods side by side. One
+subscriber ranks 1st under the counterfactual definition and 1,799th under the
+individual-hazard one.
+
+The open question the counterfactual leaves is whose hazard a saved subscriber
+should inherit — their existing segment's, or the segment they move into if the
+intervention changes their contract. Answering that properly needs post-campaign
+data.
 
 **Contract effects are correlational.** Whether two-year contracts cause
 retention, or already-committed customers are the ones who sign them, cannot be
