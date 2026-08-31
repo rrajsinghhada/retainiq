@@ -45,7 +45,7 @@ SELECT 'offer_' || LPAD(c::TEXT, 3, '0'),
 FROM   generate_series(20, 400, 20) AS c;
 
 INSERT INTO decision.assumptions VALUES
- ('baseline',      0.650, 12, 72, 140.00, 0.413, 'Central case: the ladder peak'),
+ ('baseline',      0.650, 12, 72, 160.00, 0.432, 'Central case: simulator peak on logit_v1 scores'),
  ('save_rate_low', 0.650, 12, 72, 140.00, 0.250, 'Sensitivity: pessimistic uplift'),
  ('save_rate_high',0.650, 12, 72, 140.00, 0.550, 'Sensitivity: optimistic uplift'),
  ('window_6',      0.650,  6, 72, 140.00, 0.413, 'Sensitivity: shorter observation window'),
